@@ -1,8 +1,9 @@
 # =============================================================================
-# APLIKASI DEMO WSD RULE‑BASED + POS TAGGING
+# APLIKASI DEMO WSD RULE‑BASED + POS TAGGING (STREAMLIT)
 # =============================================================================
 import streamlit as st
 import pandas as pd
+import numpy as np
 import stanza
 
 # -------------------------------------------------------------------------
@@ -14,7 +15,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS
+# Custom CSS untuk tampilan kartu dan aksen
 st.markdown("""
 <style>
     .main-title {
@@ -92,7 +93,7 @@ def load_dataset():
 df = load_dataset()
 
 # -------------------------------------------------------------------------
-# ATURAN DENGAN POS UNTUK SEMUA
+# ATURAN DENGAN POS UNTUK SEMUA (LENGKAP)
 # -------------------------------------------------------------------------
 RULES = {
     "alam": [
@@ -257,27 +258,19 @@ RULES = {
     ]
 }
 
-# Default sense berdasarkan frekuensi di data latih
+# Hitung default sense dari dataset (frekuensi tertinggi per lemma)
 default_synset = {}
 for lemma in RULES.keys():
-    lemma_train = df[df["lemma"] == lemma]
-    if not lemma_train.empty:
-        most_common = lemma_train["synset_id"].value_counts().idxmax()
-        default_synset[lemma] = most_common
+    lemma_data = df[df["lemma"] == lemma]
+    if not lemma_data.empty:
+        most_common = lemma_data["synset_id"].value_counts().idxmax()
+        # Konversi np.int64 ke float/int jika perlu
+        default_synset[lemma] = float(most_common) if isinstance(most_common, np.integer) else most_common
     else:
         default_synset[lemma] = None
 
-# Deskripsi untuk setiap synset
-deskripsi_synset = {}
-for lemma, rules in RULES.items():
-    for rule in rules:
-        deskripsi_synset[rule["synset_id"]] = rule["deskripsi"]
-for syn in default_synset.values():
-    if syn not in deskripsi_synset:
-        deskripsi_synset[syn] = "Makna lain (default)"
-
 # -------------------------------------------------------------------------
-# FUNGSI POS TAGGING & PREDIKSI
+# FUNGSI POS TAGGING
 # -------------------------------------------------------------------------
 def get_pos_tags(kalimat):
     doc = nlp(kalimat)
@@ -287,34 +280,55 @@ def get_pos_tags(kalimat):
             tags.append((word.text, word.upos))
     return tags
 
+# -------------------------------------------------------------------------
+# FUNGSI PREDIKSI MAKNA (VERSI TERBARU DENGAN np.int64 HANDLING)
+# -------------------------------------------------------------------------
 def predict_synset(sentence, lemma):
+    """
+    Prediksi synset_id untuk lemma di dalam kalimat.
+    Mengembalikan tuple (pred_synset_id, keterangan).
+    """
     tagged = get_pos_tags(sentence)
 
-    # Cari posisi lemma pertama
+    # Cari posisi lemma pertama dan tag POS-nya
     lemma_pos = None
+    lemma_pos_tag = None
     for i, (word, tag) in enumerate(tagged):
         if word.lower() == lemma.lower():
             lemma_pos = i
+            lemma_pos_tag = tag
             break
 
-    if lemma_pos is None:
-        return default_synset.get(lemma), "default (lemma tidak ditemukan)"
-
-    pos_target = tagged[lemma_pos][1]
-    lower_sent = sentence.lower()
     rules = RULES.get(lemma, [])
 
+    # Jika lemma tidak ditemukan dalam kalimat
+    if lemma_pos is None:
+        default_val = default_synset.get(lemma, 0)
+        if isinstance(default_val, (np.integer, np.floating)):
+            default_val = float(default_val)
+        return default_val, f"Lemma '{lemma}' tidak ditemukan dalam kalimat. Menggunakan nilai default."
+
+    lower_sent = sentence.lower()
+
     for rule in rules:
-        keyword_match = any(kw in lower_sent for kw in rule["keywords"])
+        keyword_match = any(kw in lower_sent for kw in rule['keywords'])
         pos_ok = True
-        if rule.get("pos_target") is not None:
-            pos_ok = (pos_target == rule["pos_target"])
+        if rule.get('pos_target') is not None:
+            pos_ok = (lemma_pos_tag == rule['pos_target'])
 
         if keyword_match and pos_ok:
-            return rule["synset_id"], f"Aturan: kata kunci + POS '{pos_target}'"
+            syn_id = rule['synset_id']
+            if isinstance(syn_id, (np.integer, np.floating)):
+                syn_id = float(syn_id)
+            # Keterangan lebih informatif
+            desc = rule.get('deskripsi', '')
+            return syn_id, f"Aturan: '{desc}' (POS: {lemma_pos_tag})"
 
-    # Fallback ke default
-    return default_synset.get(lemma), f"Default (tidak ada aturan cocok, POS lemma = '{pos_target}')"
+    # Jika tidak ada aturan yang cocok, gunakan default
+    default_val = default_synset.get(lemma, 0)
+    if isinstance(default_val, (np.integer, np.floating)):
+        default_val = float(default_val)
+    return default_val, f"Tidak ada aturan spesifik yang cocok untuk '{lemma}'. Menggunakan nilai default (POS: {lemma_pos_tag})."
 
 # -------------------------------------------------------------------------
 # UI UTAMA
@@ -324,6 +338,7 @@ with col2:
     st.markdown('<div class="main-title">🧠 Word Sense Disambiguation</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Metode <b>Rule‑based</b> + POS Tagging</div>', unsafe_allow_html=True)
 
+# Input dua kolom
 col_input1, col_input2 = st.columns([3, 1])
 with col_input1:
     kalimat = st.text_input(
@@ -334,10 +349,12 @@ with col_input1:
 with col_input2:
     lemma = st.selectbox("🎯 Pilih lemma:", list(RULES.keys()))
 
+# Tombol prediksi
 col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 2])
 with col_btn2:
     prediksi_clicked = st.button("✨ Prediksi Makna")
 
+# Hasil prediksi
 if prediksi_clicked:
     if not kalimat.strip():
         st.warning("⚠️ Silakan masukkan kalimat terlebih dahulu.")
@@ -346,7 +363,16 @@ if prediksi_clicked:
         if synset_id is None:
             st.error("Makna tidak dapat ditentukan (lemma tidak ada dalam data latih).")
         else:
-            deskripsi = deskripsi_synset.get(synset_id, "Tidak ada deskripsi")
+            # Ambil deskripsi dari RULES jika ada, jika tidak fallback ke keterangan
+            deskripsi = ""
+            # Coba cari deskripsi dari RULES
+            for rule in RULES.get(lemma, []):
+                if rule['synset_id'] == synset_id:
+                    deskripsi = rule['deskripsi']
+                    break
+            if not deskripsi:
+                # Jika tidak ditemukan (mungkin default), kita bisa pakai keterangan singkat
+                deskripsi = "Makna default"
 
             st.markdown(f"""
             <div class="result-card">
@@ -366,20 +392,20 @@ if prediksi_clicked:
 # SIDEBAR
 # -------------------------------------------------------------------------
 with st.sidebar:
-    st.header("📚 Daftar Makna & Aturan (POS Penuh)")
+    st.header("📚 Daftar Makna & Aturan")
+    st.markdown("Berikut adalah aturan yang digunakan untuk setiap lemma:")
     for lem, rules in RULES.items():
         with st.expander(f"**{lem}** ({len(rules)} aturan)"):
             for r in rules:
-                pos_str = f"`{r['pos_target']}`" if r['pos_target'] else "—"
+                pos_str = f"`{r['pos_target']}`"
                 keywords_preview = ', '.join(r['keywords'][:10])
                 if len(r['keywords']) > 10:
                     keywords_preview += '...'
                 st.markdown(f"""
-                <div style="margin-bottom:10px; padding:10px; background:#1f77b4; border-radius:8px;">
+                <div style="margin-bottom:10px; padding:10px; background:transparent; border-radius:8px;">
                     <b>Synset ID:</b> <code>{r['synset_id']}</code><br>
                     <b>Deskripsi:</b> {r['deskripsi']}<br>
                     <b>Kata Kunci:</b> <small>{keywords_preview}</small><br>
                     <b>POS Target:</b> {pos_str}
                 </div>
                 """, unsafe_allow_html=True)
-    st.caption("Default sense diambil dari frekuensi tertinggi di data latih.")
